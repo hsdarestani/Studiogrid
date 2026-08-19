@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0E2A32" />
+  <meta name="description" content="Studiogrid – Operating System für moderne Fitnessstudios" />
+  <title>Studiogrid — Studio Operating System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="brand-copy"><strong>STUDIOGRID</strong><small>Studio Operating System</small></div>
+        <button class="icon-btn mobile-only" id="closeSidebar" aria-label="Menü schließen">×</button>
+      </div>
+
+      <div class="studio-switcher">
+        <div class="studio-avatar">P</div>
+        <div><small>Aktives Studio</small><strong>Pulse Frankfurt</strong></div>
+        <span class="chev">⌄</span>
+      </div>
+
+      <nav id="navigation" class="navigation" aria-label="Hauptnavigation"></nav>
+
+      <div class="sidebar-footer">
+        <div class="sync-card">
+          <div class="sync-dot"></div>
+          <div><strong>Alle Systeme synchron</strong><small>Zuletzt vor 18 Sek.</small></div>
+        </div>
+        <button class="profile-card" data-route="settings">
+          <div class="avatar">AM</div>
+          <div><strong>Anna Müller</strong><small>Studio Admin</small></div>
+          <span>•••</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="icon-btn mobile-only" id="openSidebar" aria-label="Menü öffnen">☰</button>
+          <div class="breadcrumb" id="breadcrumb"><span>Übersicht</span><strong>Dashboard</strong></div>
+        </div>
+        <div class="topbar-actions">
+          <button class="search-box" id="searchButton"><span>⌕</span><span>Mitglieder, Verträge, Rechnungen suchen…</span><kbd>⌘ K</kbd></button>
+          <button class="icon-btn notification-btn" id="notificationButton" aria-label="Benachrichtigungen"><span>◌</span><i></i></button>
+          <button class="primary-btn" id="quickAdd">+ Mitglied anlegen</button>
+        </div>
+      </header>
+
+      <section id="content" class="content"></section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button class="modal-close" id="modalClose">×</button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <div class="command-palette" id="commandPalette" hidden>
+    <div class="command-box">
+      <div class="command-input"><span>⌕</span><input id="commandInput" placeholder="Springe zu einem Bereich…" autocomplete="off" /></div>
+      <div id="commandResults" class="command-results"></div>
+      <div class="command-footer"><span><kbd>↑</kbd><kbd>↓</kbd> navigieren</span><span><kbd>Enter</kbd> öffnen</span><span><kbd>Esc</kbd> schließen</span></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"><strong>Demo-Modus</strong><span>Aktion wurde simuliert.</span></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
