@@ -1,0 +1,38 @@
+name: Check Studiogrid DNS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  dns:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install DNS tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils
+
+      - name: Check public DNS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: 91.107.155.106
+        run: |
+          A_RECORDS="$(dig +short A studiogrid.smarbiz.sbs @1.1.1.1 | tr '\n' ' ' | xargs)"
+          AAAA_RECORDS="$(dig +short AAAA studiogrid.smarbiz.sbs @1.1.1.1 | tr '\n' ' ' | xargs)"
+          echo "A=$A_RECORDS"
+          echo "AAAA=$AAAA_RECORDS"
+          STATE=success
+          DESC="DNS A: ${A_RECORDS:-none}"
+          if ! echo " $A_RECORDS " | grep -q " $EXPECTED "; then
+            STATE=failure
+            DESC="DNS mismatch. A=${A_RECORDS:-none}; expected $EXPECTED"
+          fi
+          DESC="${DESC:0:135}"
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"studiogrid/dns\",\"description\":\"$DESC\"}" >/dev/null
+          [ "$STATE" = success ]
