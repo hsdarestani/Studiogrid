@@ -1,0 +1,30 @@
+name: Public Studiogrid Check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check public URL through Cloudflare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          CODE=$(curl -ksS -o /tmp/body -w '%{http_code}' --max-time 20 https://studiogrid.smarbiz.sbs/)
+          echo "HTTP=$CODE"
+          head -c 300 /tmp/body || true
+          STATE=success
+          DESC="Public URL HTTP $CODE"
+          if [ "$CODE" != "200" ]; then STATE=failure; fi
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"studiogrid/public\",\"description\":\"$DESC\"}" >/dev/null
+          [ "$STATE" = success ]
