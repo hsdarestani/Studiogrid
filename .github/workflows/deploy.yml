@@ -20,6 +20,7 @@ jobs:
     env:
       HOST: 91.107.155.106
       SSHPASS: ${{ secrets.PASS }}
+      SSH_OPTS: -o PreferredAuthentications=keyboard-interactive,password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,23 +51,23 @@ jobs:
         id: connect
         if: steps.port.outcome == 'success'
         continue-on-error: true
-        run: sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=12 -o StrictHostKeyChecking=no root@"$HOST" 'echo connected'
+        run: sshpass -e ssh $SSH_OPTS -o ConnectTimeout=12 root@"$HOST" 'echo connected'
 
       - name: Prepare and upload demo
         id: upload
         if: steps.connect.outcome == 'success'
         continue-on-error: true
         run: |
-          sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled'
-          sshpass -e rsync -az --delete -e "ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no" --exclude='.git' --exclude='.github' --exclude='deploy' ./ root@"$HOST":/var/www/studiogrid/
-          sshpass -e scp -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
+          sshpass -e ssh $SSH_OPTS root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled'
+          sshpass -e rsync -az --delete -e "ssh $SSH_OPTS" --exclude='.git' --exclude='.github' --exclude='deploy' ./ root@"$HOST":/var/www/studiogrid/
+          sshpass -e scp $SSH_OPTS deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
 
       - name: Configure nginx and HTTPS
         id: nginx
         if: steps.upload.outcome == 'success'
         continue-on-error: true
         run: |
-          sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
+          sshpass -e ssh $SSH_OPTS root@"$HOST" 'bash -s' <<'REMOTE'
           set -e
           if ! command -v nginx >/dev/null 2>&1; then
             apt-get update -qq
@@ -109,7 +110,7 @@ jobs:
           STATE=success; DESC='Studiogrid demo deployed'; STAGE=success
           if [ "$VALIDATE" != "success" ]; then STATE=failure; DESC='FAILED: PASS secret validation'; STAGE=secrets;
           elif [ "$PORT" != "success" ]; then STATE=failure; DESC='FAILED: server port 22 unreachable'; STAGE=network;
-          elif [ "$CONNECT" != "success" ]; then STATE=failure; DESC='FAILED: root password authentication'; STAGE=auth;
+          elif [ "$CONNECT" != "success" ]; then STATE=failure; DESC='FAILED: root authentication'; STAGE=auth;
           elif [ "$UPLOAD" != "success" ]; then STATE=failure; DESC='FAILED: server upload'; STAGE=upload;
           elif [ "$NGINX" != "success" ]; then STATE=failure; DESC='FAILED: nginx/server configuration'; STAGE=nginx;
           elif [ "$SMOKE" != "success" ]; then STATE=failure; DESC='FAILED: HTTP smoke test'; STAGE=smoke; fi
