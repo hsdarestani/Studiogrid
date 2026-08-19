@@ -30,53 +30,81 @@ jobs:
         run: |
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d '{"state":"pending","context":"studiogrid/deploy","description":"Starting deployment"}' >/dev/null
+            -d '{"state":"pending","context":"studiogrid/deploy","description":"Starting Python SSH deployment"}' >/dev/null
 
-      - name: Install deploy tools
-        id: tools
-        continue-on-error: true
-        run: timeout 120 bash -lc 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass rsync netcat-openbsd'
-
-      - name: Validate password secret
+      - name: Validate deployment secret
         id: validate
         continue-on-error: true
         run: test -n "$SSHPASS"
 
-      - name: Test SSH port
-        id: port
-        if: steps.validate.outcome == 'success' && steps.tools.outcome == 'success'
-        continue-on-error: true
-        run: timeout 15 nc -z -w 8 "$HOST" 22
-
-      - name: Test root password authentication
-        id: connect
-        if: steps.port.outcome == 'success'
-        continue-on-error: true
-        run: timeout 25 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=12 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no root@"$HOST" 'echo connected'
-
-      - name: Upload demo
-        id: upload
-        if: steps.connect.outcome == 'success'
+      - name: Prepare deploy archive
+        id: archive
+        if: steps.validate.outcome == 'success'
         continue-on-error: true
         run: |
-          set -e
-          SSH="ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no"
-          timeout 30 sshpass -e $SSH root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled'
-          timeout 90 sshpass -e rsync -az --delete -e "$SSH" --exclude='.git' --exclude='.github' --exclude='deploy' ./ root@"$HOST":/var/www/studiogrid/
-          timeout 30 sshpass -e scp -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o StrictHostKeyChecking=no deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
+          tar --exclude='.git' --exclude='.github' -czf /tmp/studiogrid.tar.gz .
+          test -s /tmp/studiogrid.tar.gz
 
-      - name: Configure nginx
+      - name: Install Python SSH library
+        id: pyssh
+        if: steps.archive.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          try:
+              import paramiko
+              print('paramiko already installed')
+          except ImportError:
+              raise SystemExit(1)
+          PY
+
+      - name: Install Paramiko fallback
+        id: pip
+        if: steps.archive.outcome == 'success' && steps.pyssh.outcome != 'success'
+        continue-on-error: true
+        run: timeout 90 python -m pip install --disable-pip-version-check -q paramiko
+
+      - name: Test SSH and upload
+        id: upload
+        if: steps.archive.outcome == 'success' && (steps.pyssh.outcome == 'success' || steps.pip.outcome == 'success')
+        continue-on-error: true
+        env:
+          PASS: ${{ secrets.PASS }}
+        run: |
+          python - <<'PY'
+          import os, socket, sys, paramiko
+          host=os.environ['HOST']; password=os.environ['PASS']
+          socket.create_connection((host,22),12).close()
+          c=paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+          c.connect(host, username='root', password=password, timeout=15, banner_timeout=15, auth_timeout=15, allow_agent=False, look_for_keys=False)
+          sftp=c.open_sftp(); sftp.put('/tmp/studiogrid.tar.gz','/tmp/studiogrid.tar.gz'); sftp.close()
+          stdin,stdout,stderr=c.exec_command("mkdir -p /var/www/studiogrid && find /var/www/studiogrid -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar -xzf /tmp/studiogrid.tar.gz -C /var/www/studiogrid", timeout=90)
+          rc=stdout.channel.recv_exit_status(); err=stderr.read().decode()
+          c.close()
+          if rc: print(err); sys.exit(rc)
+          print('SSH authentication and upload succeeded')
+          PY
+
+      - name: Configure web server
         id: nginx
         if: steps.upload.outcome == 'success'
         continue-on-error: true
+        env:
+          PASS: ${{ secrets.PASS }}
         run: |
-          timeout 240 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
-          set -e
+          python - <<'PY'
+          import os, sys, paramiko
+          host=os.environ['HOST']; password=os.environ['PASS']
+          c=paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+          c.connect(host, username='root', password=password, timeout=15, auth_timeout=15, allow_agent=False, look_for_keys=False)
+          cmd=r'''set -e
           if ! command -v nginx >/dev/null 2>&1; then
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx
+            export DEBIAN_FRONTEND=noninteractive
+            timeout 180 apt-get update -qq
+            timeout 180 apt-get install -y -qq nginx
           fi
-          install -m 0644 /tmp/studiogrid-nginx.conf /etc/nginx/sites-available/studiogrid
+          mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+          install -m 0644 /var/www/studiogrid/deploy/nginx.conf /etc/nginx/sites-available/studiogrid
           ln -sfn /etc/nginx/sites-available/studiogrid /etc/nginx/sites-enabled/studiogrid
           rm -f /etc/nginx/sites-enabled/default
           nginx -t
@@ -86,54 +114,72 @@ jobs:
             ufw allow 80/tcp >/dev/null || true
             ufw allow 443/tcp >/dev/null || true
           fi
-          REMOTE
+          curl -fsS --max-time 10 http://127.0.0.1/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
+          echo WEB_OK'''
+          stdin,stdout,stderr=c.exec_command(cmd, timeout=240)
+          out=stdout.read().decode(); err=stderr.read().decode(); rc=stdout.channel.recv_exit_status(); c.close()
+          print(out)
+          if rc: print(err); sys.exit(rc)
+          PY
 
-      - name: HTTP smoke test
+      - name: Public HTTP smoke test
         id: smoke
         if: steps.nginx.outcome == 'success'
         continue-on-error: true
-        run: |
-          sleep 2
-          curl --fail --retry 5 --retry-delay 2 --connect-timeout 8 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
+        run: curl -fsS --retry 4 --retry-delay 2 --connect-timeout 8 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
 
-      - name: Attempt HTTPS certificate
+      - name: Configure HTTPS when DNS is ready
         id: https
-        if: steps.smoke.outcome == 'success'
+        if: steps.nginx.outcome == 'success'
         continue-on-error: true
+        env:
+          PASS: ${{ secrets.PASS }}
         run: |
-          timeout 180 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
-          set -e
-          if getent hosts studiogrid.smarbiz.sbs >/dev/null 2>&1; then
-            if ! command -v certbot >/dev/null 2>&1; then
-              apt-get update -qq
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-nginx
-            fi
-            certbot --nginx -d studiogrid.smarbiz.sbs --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
+          python - <<'PY'
+          import os, sys, paramiko
+          host=os.environ['HOST']; password=os.environ['PASS']
+          c=paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+          c.connect(host, username='root', password=password, timeout=15, auth_timeout=15, allow_agent=False, look_for_keys=False)
+          cmd=r'''set -e
+          RESOLVED=$(getent ahostsv4 studiogrid.smarbiz.sbs 2>/dev/null | awk 'NR==1{print $1}')
+          if [ "$RESOLVED" != "91.107.155.106" ]; then
+            echo "DNS_PENDING:$RESOLVED"
+            exit 0
           fi
-          REMOTE
+          if ! command -v certbot >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            timeout 180 apt-get update -qq
+            timeout 180 apt-get install -y -qq certbot python3-certbot-nginx
+          fi
+          certbot --nginx -d studiogrid.smarbiz.sbs --non-interactive --agree-tos --register-unsafely-without-email --redirect
+          echo HTTPS_OK'''
+          stdin,stdout,stderr=c.exec_command(cmd, timeout=300)
+          out=stdout.read().decode(); err=stderr.read().decode(); rc=stdout.channel.recv_exit_status(); c.close()
+          print(out)
+          if rc: print(err); sys.exit(rc)
+          PY
 
       - name: Report final deployment status
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          TOOLS: ${{ steps.tools.outcome }}
           VALIDATE: ${{ steps.validate.outcome }}
-          PORT: ${{ steps.port.outcome }}
-          CONNECT: ${{ steps.connect.outcome }}
+          ARCHIVE: ${{ steps.archive.outcome }}
+          PYSSH: ${{ steps.pyssh.outcome }}
+          PIP: ${{ steps.pip.outcome }}
           UPLOAD: ${{ steps.upload.outcome }}
           NGINX: ${{ steps.nginx.outcome }}
           SMOKE: ${{ steps.smoke.outcome }}
           HTTPS: ${{ steps.https.outcome }}
         run: |
-          STATE=success; DESC='Studiogrid demo deployed'; STAGE=success
-          if [ "$TOOLS" != "success" ]; then STATE=failure; DESC='FAILED: runner deploy tools'; STAGE=tools;
-          elif [ "$VALIDATE" != "success" ]; then STATE=failure; DESC='FAILED: PASS secret'; STAGE=secrets;
-          elif [ "$PORT" != "success" ]; then STATE=failure; DESC='FAILED: SSH port 22'; STAGE=network;
-          elif [ "$CONNECT" != "success" ]; then STATE=failure; DESC='FAILED: root password authentication'; STAGE=auth;
-          elif [ "$UPLOAD" != "success" ]; then STATE=failure; DESC='FAILED: upload'; STAGE=upload;
-          elif [ "$NGINX" != "success" ]; then STATE=failure; DESC='FAILED: nginx configuration'; STAGE=nginx;
-          elif [ "$SMOKE" != "success" ]; then STATE=failure; DESC='FAILED: HTTP smoke test'; STAGE=smoke;
-          elif [ "$HTTPS" != "success" ]; then STATE=success; DESC='Deployed over HTTP; HTTPS pending DNS/cert'; STAGE=https; fi
+          STATE=success; DESC='Studiogrid deployed'; STAGE=success
+          if [ "$VALIDATE" != "success" ]; then STATE=failure; DESC='FAILED: PASS secret'; STAGE=secrets;
+          elif [ "$ARCHIVE" != "success" ]; then STATE=failure; DESC='FAILED: deploy archive'; STAGE=archive;
+          elif [ "$PYSSH" != "success" ] && [ "$PIP" != "success" ]; then STATE=failure; DESC='FAILED: Python SSH library'; STAGE=tools;
+          elif [ "$UPLOAD" != "success" ]; then STATE=failure; DESC='FAILED: SSH authentication/upload'; STAGE=ssh;
+          elif [ "$NGINX" != "success" ]; then STATE=failure; DESC='FAILED: nginx/server configuration'; STAGE=nginx;
+          elif [ "$SMOKE" != "success" ]; then STATE=failure; DESC='Server configured; public port 80 blocked'; STAGE=network;
+          elif [ "$HTTPS" != "success" ]; then STATE=success; DESC='HTTP live; HTTPS setup pending'; STAGE=https; fi
           URL="https://github.com/${{ github.repository }}/actions?stage=$STAGE"
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
