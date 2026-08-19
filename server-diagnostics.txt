@@ -1,0 +1,61 @@
+Warning: Permanently added '91.107.155.106' (ED25519) to the list of known hosts.
+=== DATE ===
+2026-08-19T07:57:28+00:00
+=== HOST ===
+Srv-HET-b9f529
+91.107.155.106 2a01:4f8:1c1b:2702::1 
+=== NGINX ===
+active
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+=== LISTENERS ===
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=6397,fd=5),("nginx",pid=6396,fd=5),("nginx",pid=6395,fd=5))
+LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=1327,fd=3),("systemd",pid=1,fd=117))                        
+LISTEN 0      511          0.0.0.0:443       0.0.0.0:*    users:(("nginx",pid=6397,fd=7),("nginx",pid=6396,fd=7),("nginx",pid=6395,fd=7))
+LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=6397,fd=6),("nginx",pid=6396,fd=6),("nginx",pid=6395,fd=6))
+LISTEN 0      4096            [::]:22           [::]:*    users:(("sshd",pid=1327,fd=4),("systemd",pid=1,fd=124))                        
+LISTEN 0      511             [::]:443          [::]:*    users:(("nginx",pid=6397,fd=8),("nginx",pid=6396,fd=8),("nginx",pid=6395,fd=8))
+=== LOCAL HTTP ===
+200
+=== LOCAL HTTPS ===
+200
+=== UFW ===
+Status: inactive
+=== IPTABLES ===
+-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+=== NFT ===
+table ip filter {
+}
+table ip6 filter {
+}
+=== FAIL2BAN ===
+bash: line 11: fail2ban-client: command not found
+=== NGINX ERROR LOG ===
+2026/08/19 07:46:48 [notice] 2813#2813: using inherited sockets from "5;6;"
+=== NGINX ACCESS LOG ===
+127.0.0.1 - - [19/Aug/2026:07:46:55 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+20.169.99.52 - - [19/Aug/2026:07:46:55 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+127.0.0.1 - - [19/Aug/2026:07:47:57 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+20.55.118.114 - - [19/Aug/2026:07:47:58 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+43.134.236.36 - - [19/Aug/2026:07:48:20 +0000] "GET / HTTP/1.1" 200 1489 "-" "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1"
+43.166.244.251 - - [19/Aug/2026:07:51:53 +0000] "GET / HTTP/1.1" 200 1489 "-" "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1"
+127.0.0.1 - - [19/Aug/2026:07:53:32 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+127.0.0.1 - - [19/Aug/2026:07:53:32 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+20.169.97.249 - - [19/Aug/2026:07:53:35 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+20.169.97.249 - - [19/Aug/2026:07:53:35 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+93.174.93.12 - - [19/Aug/2026:07:54:07 +0000] "GET / HTTP/1.0" 200 3607 "-" "Mozilla/5.0 (X11; Linux x86_64; rv:38.0) Gecko/20100101 Firefox/38.0 Iceweasel/38.2.1"
+127.0.0.1 - - [19/Aug/2026:07:54:28 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+64.236.160.194 - - [19/Aug/2026:07:54:28 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+45.194.92.40 - - [19/Aug/2026:07:55:46 +0000] "GET /SDK/webLanguage HTTP/1.1" 200 1489 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.85 Safari/537.36 Edg/90.0.818.46"
+127.0.0.1 - - [19/Aug/2026:07:56:14 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+57.151.83.98 - - [19/Aug/2026:07:56:15 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+127.0.0.1 - - [19/Aug/2026:07:56:42 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+127.0.0.1 - - [19/Aug/2026:07:56:42 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+135.232.216.65 - - [19/Aug/2026:07:56:44 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+135.232.216.65 - - [19/Aug/2026:07:56:45 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
+127.0.0.1 - - [19/Aug/2026:07:57:28 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+127.0.0.1 - - [19/Aug/2026:07:57:28 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+127.0.0.1 - - [19/Aug/2026:07:57:28 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.18.0"
+64.236.140.198 - - [19/Aug/2026:07:57:28 +0000] "GET / HTTP/1.1" 200 3607 "-" "curl/8.5.0"
