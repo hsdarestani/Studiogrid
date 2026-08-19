@@ -16,7 +16,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     env:
       HOST: 91.107.155.106
       SSHPASS: ${{ secrets.PASS }}
@@ -30,44 +30,47 @@ jobs:
         run: |
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d '{"state":"pending","context":"studiogrid/deploy","description":"Deploying demo to production"}' >/dev/null
+            -d '{"state":"pending","context":"studiogrid/deploy","description":"Starting deployment"}' >/dev/null
 
       - name: Install deploy tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass rsync netcat-openbsd
+        id: tools
+        continue-on-error: true
+        run: timeout 120 bash -lc 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass rsync netcat-openbsd'
 
-      - name: Validate deployment password
+      - name: Validate password secret
         id: validate
         continue-on-error: true
-        run: test -n "$SSHPASS" || (echo "Missing PASS secret" && exit 1)
+        run: test -n "$SSHPASS"
 
       - name: Test SSH port
         id: port
-        if: steps.validate.outcome == 'success'
+        if: steps.validate.outcome == 'success' && steps.tools.outcome == 'success'
         continue-on-error: true
-        run: nc -z -w 8 "$HOST" 22
+        run: timeout 15 nc -z -w 8 "$HOST" 22
 
       - name: Test root password authentication
         id: connect
         if: steps.port.outcome == 'success'
         continue-on-error: true
-        run: timeout 20 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=12 -o StrictHostKeyChecking=no root@"$HOST" 'echo connected'
+        run: timeout 25 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=12 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no root@"$HOST" 'echo connected'
 
-      - name: Prepare and upload demo
+      - name: Upload demo
         id: upload
         if: steps.connect.outcome == 'success'
         continue-on-error: true
         run: |
-          SSH="ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no"
-          sshpass -e $SSH root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled'
-          sshpass -e rsync -az --delete -e "$SSH" --exclude='.git' --exclude='.github' --exclude='deploy' ./ root@"$HOST":/var/www/studiogrid/
-          sshpass -e scp -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
+          set -e
+          SSH="ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no"
+          timeout 30 sshpass -e $SSH root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled'
+          timeout 90 sshpass -e rsync -az --delete -e "$SSH" --exclude='.git' --exclude='.github' --exclude='deploy' ./ root@"$HOST":/var/www/studiogrid/
+          timeout 30 sshpass -e scp -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o StrictHostKeyChecking=no deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
 
-      - name: Configure nginx and HTTPS
+      - name: Configure nginx
         id: nginx
         if: steps.upload.outcome == 'success'
         continue-on-error: true
         run: |
-          sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
+          timeout 240 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
           set -e
           if ! command -v nginx >/dev/null 2>&1; then
             apt-get update -qq
@@ -79,7 +82,28 @@ jobs:
           nginx -t
           systemctl enable nginx >/dev/null 2>&1 || true
           systemctl restart nginx
-          if ! test -d /etc/letsencrypt/live/studiogrid.smarbiz.sbs; then
+          if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
+            ufw allow 80/tcp >/dev/null || true
+            ufw allow 443/tcp >/dev/null || true
+          fi
+          REMOTE
+
+      - name: HTTP smoke test
+        id: smoke
+        if: steps.nginx.outcome == 'success'
+        continue-on-error: true
+        run: |
+          sleep 2
+          curl --fail --retry 5 --retry-delay 2 --connect-timeout 8 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
+
+      - name: Attempt HTTPS certificate
+        id: https
+        if: steps.smoke.outcome == 'success'
+        continue-on-error: true
+        run: |
+          timeout 180 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
+          set -e
+          if getent hosts studiogrid.smarbiz.sbs >/dev/null 2>&1; then
             if ! command -v certbot >/dev/null 2>&1; then
               apt-get update -qq
               DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-nginx
@@ -88,32 +112,28 @@ jobs:
           fi
           REMOTE
 
-      - name: Smoke test
-        id: smoke
-        if: steps.nginx.outcome == 'success'
-        continue-on-error: true
-        run: |
-          sleep 2
-          curl --fail --retry 4 --retry-delay 2 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
-
       - name: Report final deployment status
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          TOOLS: ${{ steps.tools.outcome }}
           VALIDATE: ${{ steps.validate.outcome }}
           PORT: ${{ steps.port.outcome }}
           CONNECT: ${{ steps.connect.outcome }}
           UPLOAD: ${{ steps.upload.outcome }}
           NGINX: ${{ steps.nginx.outcome }}
           SMOKE: ${{ steps.smoke.outcome }}
+          HTTPS: ${{ steps.https.outcome }}
         run: |
           STATE=success; DESC='Studiogrid demo deployed'; STAGE=success
-          if [ "$VALIDATE" != "success" ]; then STATE=failure; DESC='FAILED: PASS secret validation'; STAGE=secrets;
-          elif [ "$PORT" != "success" ]; then STATE=failure; DESC='FAILED: server port 22 unreachable'; STAGE=network;
+          if [ "$TOOLS" != "success" ]; then STATE=failure; DESC='FAILED: runner deploy tools'; STAGE=tools;
+          elif [ "$VALIDATE" != "success" ]; then STATE=failure; DESC='FAILED: PASS secret'; STAGE=secrets;
+          elif [ "$PORT" != "success" ]; then STATE=failure; DESC='FAILED: SSH port 22'; STAGE=network;
           elif [ "$CONNECT" != "success" ]; then STATE=failure; DESC='FAILED: root password authentication'; STAGE=auth;
-          elif [ "$UPLOAD" != "success" ]; then STATE=failure; DESC='FAILED: server upload'; STAGE=upload;
-          elif [ "$NGINX" != "success" ]; then STATE=failure; DESC='FAILED: nginx/server configuration'; STAGE=nginx;
-          elif [ "$SMOKE" != "success" ]; then STATE=failure; DESC='FAILED: HTTP smoke test'; STAGE=smoke; fi
+          elif [ "$UPLOAD" != "success" ]; then STATE=failure; DESC='FAILED: upload'; STAGE=upload;
+          elif [ "$NGINX" != "success" ]; then STATE=failure; DESC='FAILED: nginx configuration'; STAGE=nginx;
+          elif [ "$SMOKE" != "success" ]; then STATE=failure; DESC='FAILED: HTTP smoke test'; STAGE=smoke;
+          elif [ "$HTTPS" != "success" ]; then STATE=success; DESC='Deployed over HTTP; HTTPS pending DNS/cert'; STAGE=https; fi
           URL="https://github.com/${{ github.repository }}/actions?stage=$STAGE"
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
