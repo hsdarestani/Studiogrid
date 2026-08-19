@@ -28,9 +28,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
             -d '{"state":"pending","context":"studiogrid/deploy","description":"Deploying demo to production"}' >/dev/null
 
@@ -38,24 +36,32 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass rsync
 
       - name: Validate deployment secrets
+        id: validate
+        continue-on-error: true
         run: |
           test -n "$HOST" || (echo "Missing HOST secret" && exit 1)
           test -n "$SSHPASS" || (echo "Missing PASS secret" && exit 1)
 
-      - name: Prepare server
+      - name: Test SSH connection
+        id: connect
+        if: steps.validate.outcome == 'success'
+        continue-on-error: true
+        run: |
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no root@"$HOST" 'echo connected'
+
+      - name: Prepare and upload demo
+        id: upload
+        if: steps.connect.outcome == 'success'
+        continue-on-error: true
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=no root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled'
-
-      - name: Upload demo
-        run: |
-          sshpass -e rsync -az --delete \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='deploy' \
-            ./ root@"$HOST":/var/www/studiogrid/
+          sshpass -e rsync -az --delete --exclude='.git' --exclude='.github' --exclude='deploy' ./ root@"$HOST":/var/www/studiogrid/
           sshpass -e scp -o StrictHostKeyChecking=no deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
 
       - name: Configure nginx and HTTPS
+        id: nginx
+        if: steps.upload.outcome == 'success'
+        continue-on-error: true
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
           set -e
@@ -69,7 +75,6 @@ jobs:
           nginx -t
           systemctl enable nginx >/dev/null 2>&1 || true
           systemctl restart nginx
-
           if ! test -d /etc/letsencrypt/live/studiogrid.smarbiz.sbs; then
             if ! command -v certbot >/dev/null 2>&1; then
               apt-get update -qq
@@ -80,20 +85,31 @@ jobs:
           REMOTE
 
       - name: Smoke test
+        id: smoke
+        if: steps.nginx.outcome == 'success'
+        continue-on-error: true
         run: |
-          sleep 3
-          curl --fail --retry 5 --retry-delay 2 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
-          echo "Studiogrid demo deployed successfully."
+          sleep 2
+          curl --fail --retry 4 --retry-delay 2 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
 
       - name: Report final deployment status
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          JOB_STATUS: ${{ job.status }}
+          VALIDATE: ${{ steps.validate.outcome }}
+          CONNECT: ${{ steps.connect.outcome }}
+          UPLOAD: ${{ steps.upload.outcome }}
+          NGINX: ${{ steps.nginx.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
         run: |
-          if [ "$JOB_STATUS" = "success" ]; then STATE=success; DESC='Studiogrid demo deployed'; else STATE=failure; DESC='Studiogrid deployment failed'; fi
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
+          STATE=success
+          DESC='Studiogrid demo deployed'
+          if [ "$VALIDATE" != "success" ]; then STATE=failure; DESC='FAILED: HOST/PASS secret validation';
+          elif [ "$CONNECT" != "success" ]; then STATE=failure; DESC='FAILED: SSH root connection';
+          elif [ "$UPLOAD" != "success" ]; then STATE=failure; DESC='FAILED: server upload';
+          elif [ "$NGINX" != "success" ]; then STATE=failure; DESC='FAILED: nginx/server configuration';
+          elif [ "$SMOKE" != "success" ]; then STATE=failure; DESC='FAILED: HTTP smoke test'; fi
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
             -d "{\"state\":\"$STATE\",\"context\":\"studiogrid/deploy\",\"description\":\"$DESC\"}" >/dev/null
+          [ "$STATE" = success ] || exit 1
