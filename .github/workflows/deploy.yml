@@ -1,0 +1,75 @@
+name: Deploy Studiogrid Demo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studiogrid-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HOST: ${{ secrets.HOST }}
+      SSHPASS: ${{ secrets.PASS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deploy tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass rsync
+
+      - name: Validate deployment secrets
+        run: |
+          test -n "$HOST" || (echo "Missing HOST secret" && exit 1)
+          test -n "$SSHPASS" || (echo "Missing PASS secret" && exit 1)
+
+      - name: Prepare server
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled'
+
+      - name: Upload demo
+        run: |
+          sshpass -e rsync -az --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='deploy' \
+            ./ root@"$HOST":/var/www/studiogrid/
+          sshpass -e scp -o StrictHostKeyChecking=no deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
+
+      - name: Configure nginx and HTTPS
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
+          set -e
+          if ! command -v nginx >/dev/null 2>&1; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx
+          fi
+          install -m 0644 /tmp/studiogrid-nginx.conf /etc/nginx/sites-available/studiogrid
+          ln -sfn /etc/nginx/sites-available/studiogrid /etc/nginx/sites-enabled/studiogrid
+          rm -f /etc/nginx/sites-enabled/default
+          nginx -t
+          systemctl enable nginx >/dev/null 2>&1 || true
+          systemctl restart nginx
+
+          if ! test -d /etc/letsencrypt/live/studiogrid.smarbiz.sbs; then
+            if ! command -v certbot >/dev/null 2>&1; then
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-nginx
+            fi
+            certbot --nginx -d studiogrid.smarbiz.sbs --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
+          fi
+          REMOTE
+
+      - name: Smoke test
+        run: |
+          sleep 3
+          curl --fail --retry 5 --retry-delay 2 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
+          echo "Studiogrid demo deployed successfully."
