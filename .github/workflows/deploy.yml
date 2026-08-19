@@ -1,0 +1,143 @@
+name: Deploy Studiogrid Demo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: studiogrid-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST: 91.107.155.106
+      SSHPASS: ${{ secrets.PASS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark deployment pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d '{"state":"pending","context":"studiogrid/deploy","description":"Deploying demo to production"}' >/dev/null
+
+      - name: Install deploy tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass rsync netcat-openbsd
+
+      - name: Validate deployment password
+        id: validate
+        continue-on-error: true
+        run: test -n "$SSHPASS" || (echo "Missing PASS secret" && exit 1)
+
+      - name: Test SSH port
+        id: port
+        if: steps.validate.outcome == 'success'
+        continue-on-error: true
+        run: nc -z -w 8 "$HOST" 22
+
+      - name: Test root password authentication
+        id: connect
+        if: steps.port.outcome == 'success'
+        continue-on-error: true
+        run: timeout 20 sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=12 -o StrictHostKeyChecking=no root@"$HOST" 'echo connected'
+
+      - name: Prepare and upload demo
+        id: upload
+        if: steps.connect.outcome == 'success'
+        continue-on-error: true
+        run: |
+          SSH="ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no"
+          sshpass -e $SSH root@"$HOST" 'mkdir -p /var/www/studiogrid /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/ssl'
+          sshpass -e rsync -az --delete -e "$SSH" --exclude='.git' --exclude='.github' --exclude='deploy' ./ root@"$HOST":/var/www/studiogrid/
+          sshpass -e scp -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no deploy/nginx.conf root@"$HOST":/tmp/studiogrid-nginx.conf
+
+      - name: Configure nginx, firewall and HTTPS
+        id: nginx
+        if: steps.upload.outcome == 'success'
+        continue-on-error: true
+        run: |
+          sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no root@"$HOST" 'bash -s' <<'REMOTE'
+          set -euxo pipefail
+
+          if ! command -v nginx >/dev/null 2>&1; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx openssl
+          fi
+
+          mkdir -p /etc/nginx/ssl
+          if [ ! -s /etc/nginx/ssl/studiogrid.crt ] || [ ! -s /etc/nginx/ssl/studiogrid.key ]; then
+            openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+              -keyout /etc/nginx/ssl/studiogrid.key \
+              -out /etc/nginx/ssl/studiogrid.crt \
+              -subj '/CN=studiogrid.smarbiz.sbs' \
+              -addext 'subjectAltName=DNS:studiogrid.smarbiz.sbs'
+          fi
+
+          install -m 0644 /tmp/studiogrid-nginx.conf /etc/nginx/sites-available/studiogrid
+          ln -sfn /etc/nginx/sites-available/studiogrid /etc/nginx/sites-enabled/studiogrid
+          rm -f /etc/nginx/sites-enabled/default
+
+          if command -v ufw >/dev/null 2>&1; then
+            ufw allow 80/tcp || true
+            ufw allow 443/tcp || true
+          fi
+          if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+            firewall-cmd --permanent --add-service=http || true
+            firewall-cmd --permanent --add-service=https || true
+            firewall-cmd --reload || true
+          fi
+
+          nginx -t
+          systemctl enable nginx >/dev/null 2>&1 || true
+          systemctl restart nginx
+          systemctl --no-pager --full status nginx || true
+          ss -ltnp | grep -E ':(80|443)\b' || true
+          curl -fsS http://127.0.0.1/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
+          curl -kfsS https://127.0.0.1/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
+          REMOTE
+
+      - name: Public origin smoke test
+        id: smoke
+        if: steps.nginx.outcome == 'success'
+        continue-on-error: true
+        run: |
+          sleep 2
+          curl --fail --retry 4 --retry-delay 2 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
+          curl -k --fail --retry 4 --retry-delay 2 --max-time 15 \
+            --resolve "studiogrid.smarbiz.sbs:443:$HOST" \
+            https://studiogrid.smarbiz.sbs/ >/dev/null
+
+      - name: Report final deployment status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATE: ${{ steps.validate.outcome }}
+          PORT: ${{ steps.port.outcome }}
+          CONNECT: ${{ steps.connect.outcome }}
+          UPLOAD: ${{ steps.upload.outcome }}
+          NGINX: ${{ steps.nginx.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+        run: |
+          STATE=success; DESC='Studiogrid origin reachable on ports 80 and 443'; STAGE=success
+          if [ "$VALIDATE" != "success" ]; then STATE=failure; DESC='FAILED: PASS secret validation'; STAGE=secrets;
+          elif [ "$PORT" != "success" ]; then STATE=failure; DESC='FAILED: server port 22 unreachable'; STAGE=network;
+          elif [ "$CONNECT" != "success" ]; then STATE=failure; DESC='FAILED: root password authentication'; STAGE=auth;
+          elif [ "$UPLOAD" != "success" ]; then STATE=failure; DESC='FAILED: server upload'; STAGE=upload;
+          elif [ "$NGINX" != "success" ]; then STATE=failure; DESC='FAILED: nginx/firewall/HTTPS configuration'; STAGE=nginx;
+          elif [ "$SMOKE" != "success" ]; then STATE=failure; DESC='FAILED: public origin 80/443 smoke test'; STAGE=smoke; fi
+          URL="https://github.com/${{ github.repository }}/actions?stage=$STAGE"
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"studiogrid/deploy\",\"description\":\"$DESC\",\"target_url\":\"$URL\"}" >/dev/null
+          [ "$STATE" = success ] || exit 1
