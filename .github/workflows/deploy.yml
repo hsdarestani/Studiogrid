@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: studiogrid-production
@@ -22,6 +23,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Mark deployment pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d '{"state":"pending","context":"studiogrid/deploy","description":"Deploying demo to production"}' >/dev/null
 
       - name: Install deploy tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass rsync
@@ -73,3 +84,16 @@ jobs:
           sleep 3
           curl --fail --retry 5 --retry-delay 2 --max-time 15 http://"$HOST"/ -H 'Host: studiogrid.smarbiz.sbs' >/dev/null
           echo "Studiogrid demo deployed successfully."
+
+      - name: Report final deployment status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then STATE=success; DESC='Studiogrid demo deployed'; else STATE=failure; DESC='Studiogrid deployment failed'; fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"studiogrid/deploy\",\"description\":\"$DESC\"}" >/dev/null
